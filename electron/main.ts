@@ -17,7 +17,7 @@ import {
 } from "electron";
 import { RECORDINGS_DIR } from "./appPaths";
 import { showCursor } from "./cursorHider";
-import { getGpuSwitches } from "./gpuSwitches";
+import { getGpuSwitches, isLinuxWaylandSession } from "./gpuSwitches";
 import {
 	cleanupAllExportStreams,
 	cleanupNativeVideoExportSessions,
@@ -85,7 +85,7 @@ app.on("web-contents-created", (_event, contents) => {
 });
 
 function configureGpuAccelerationSwitches() {
-	const { useAngle, useGl, disableFeatures } = getGpuSwitches(process.platform, process.env);
+	const { useAngle, useGl, disableFeatures } = getGpuSwitches(process.platform);
 	if (useAngle) {
 		app.commandLine.appendSwitch("use-angle", useAngle);
 	}
@@ -1054,7 +1054,25 @@ app.whenReady().then(async () => {
 			const isLinuxPortalSentinel =
 				process.platform === "linux" && (sourceId === "screen:linux-portal" || !sourceId);
 			if (isLinuxPortalSentinel) {
-				callback({ video: { id: "screen:0:0", name: "Entire screen" } });
+				// On Wayland the synthetic id is resolved by the portal. On X11
+				// there is no portal dialog, and handing Chromium the synthetic
+				// "screen:0:0" id makes it fail with "Could not start video
+				// source" because it does not match a real source. Enumerate the
+				// real screens on X11 so the capture can resolve.
+				if (isLinuxWaylandSession(process.env)) {
+					callback({ video: { id: "screen:0:0", name: "Entire screen" } });
+					return;
+				}
+				const x11Sources = await desktopCapturer.getSources({
+					types: ["screen"],
+					thumbnailSize: { width: 1, height: 1 },
+				});
+				const x11Source = x11Sources[0];
+				if (x11Source) {
+					callback({ video: { id: x11Source.id, name: x11Source.name } });
+				} else {
+					callback({});
+				}
 				return;
 			}
 			const sources = await desktopCapturer.getSources({ types: ["screen", "window"] });

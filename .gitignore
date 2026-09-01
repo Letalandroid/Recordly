@@ -45,3 +45,6 @@ electron/native/bin/*/whisper-runtime.json
 tmp-*.ps1
 .tmp-*.ps1
 gpu-export-probe.mp4
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
