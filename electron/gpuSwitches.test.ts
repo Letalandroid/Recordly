@@ -12,11 +12,14 @@ describe("isLinuxWaylandSession", () => {
 	});
 
 	it("prefers an explicit Ozone override over the session type", () => {
+		expect(isLinuxWaylandSession({ OZONE_PLATFORM: "wayland", XDG_SESSION_TYPE: "x11" })).toBe(
+			true,
+		);
 		expect(
-			isLinuxWaylandSession({ OZONE_PLATFORM: "wayland", XDG_SESSION_TYPE: "x11" }),
-		).toBe(true);
-		expect(
-			isLinuxWaylandSession({ ELECTRON_OZONE_PLATFORM_HINT: "x11", XDG_SESSION_TYPE: "wayland" }),
+			isLinuxWaylandSession({
+				ELECTRON_OZONE_PLATFORM_HINT: "x11",
+				XDG_SESSION_TYPE: "wayland",
+			}),
 		).toBe(false);
 	});
 

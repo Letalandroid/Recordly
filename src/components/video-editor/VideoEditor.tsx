@@ -359,6 +359,8 @@ const SMOKE_EXPORT_READY_TIMEOUT_MS = 30_000;
 const DEFAULT_MP4_EXPORT_FRAME_RATE: ExportMp4FrameRate = 30;
 const PROJECT_AUTOSAVE_DELAY_MS = 1000;
 const EXPORT_ERROR_TOAST_DURATION_MS = 20000;
+const EMPTY_ZOOM_REGIONS: ZoomRegion[] = [];
+const EMPTY_CAPTIONS: CaptionCue[] = [];
 
 function summarizeErrorMessage(message: string): string {
 	const firstLine = message
@@ -3521,25 +3523,23 @@ export default function VideoEditor() {
 		[clipRegions],
 	);
 
-	const effectiveZoomRegions = useMemo<ZoomRegion[]>(
-		() =>
-			zoomRegions.map((region) => ({
-				...region,
-				startMs: mapTimelineTimeToSourceTime(region.startMs),
-				endMs: mapTimelineTimeToSourceTime(region.endMs),
-			})),
-		[zoomRegions, mapTimelineTimeToSourceTime],
-	);
+	const effectiveZoomRegions = useMemo<ZoomRegion[]>(() => {
+		if (zoomRegions.length === 0) return EMPTY_ZOOM_REGIONS;
+		return zoomRegions.map((region) => ({
+			...region,
+			startMs: mapTimelineTimeToSourceTime(region.startMs),
+			endMs: mapTimelineTimeToSourceTime(region.endMs),
+		}));
+	}, [zoomRegions, mapTimelineTimeToSourceTime]);
 
-	const effectiveCaptionRegions = useMemo<CaptionCue[]>(
-		() =>
-			autoCaptions.map((cue) => ({
-				...cue,
-				startMs: mapSourceTimeToTimelineTime(cue.startMs),
-				endMs: mapSourceTimeToTimelineTime(cue.endMs),
-			})),
-		[autoCaptions, mapSourceTimeToTimelineTime],
-	);
+	const effectiveCaptionRegions = useMemo<CaptionCue[]>(() => {
+		if (autoCaptions.length === 0) return EMPTY_CAPTIONS;
+		return autoCaptions.map((cue) => ({
+			...cue,
+			startMs: mapSourceTimeToTimelineTime(cue.startMs),
+			endMs: mapSourceTimeToTimelineTime(cue.endMs),
+		}));
+	}, [autoCaptions, mapSourceTimeToTimelineTime]);
 
 	const timelinePlayheadTime = useMemo(
 		() => mapSourceTimeToTimelineTime(currentTime * 1000) / 1000,

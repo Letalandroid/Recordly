@@ -24,6 +24,16 @@ export function CropControl({ videoElement, cropRegion, onCropChange }: CropCont
 	const [isDragging, setIsDragging] = useState<DragHandle>(null);
 	const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
 	const [initialCrop, setInitialCrop] = useState<CropRegion>(cropRegion);
+	const [draftCrop, setDraftCrop] = useState<CropRegion>(cropRegion);
+	const pendingCropRef = useRef<CropRegion | null>(null);
+	const rafIdRef = useRef<number | null>(null);
+
+	useEffect(() => {
+		if (!isDragging) {
+			setDraftCrop(cropRegion);
+			setInitialCrop(cropRegion);
+		}
+	}, [cropRegion, isDragging]);
 
 	useEffect(() => {
 		if (!videoElement || !canvasRef.current) return;
@@ -35,6 +45,23 @@ export function CropControl({ videoElement, cropRegion, onCropChange }: CropCont
 		canvas.width = videoElement.videoWidth || 1920;
 		canvas.height = videoElement.videoHeight || 1080;
 
+		const drawFrame = () => {
+			if (videoElement.readyState >= 2) {
+				ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+			}
+		};
+
+		drawFrame();
+
+		// If video is paused, only redraw when a seeked event occurs rather than
+		// spinning an unneeded 60 FPS requestAnimationFrame loop on the canvas.
+		if (videoElement.paused) {
+			videoElement.addEventListener("seeked", drawFrame);
+			return () => {
+				videoElement.removeEventListener("seeked", drawFrame);
+			};
+		}
+
 		let animationFrameId = 0;
 		let isCancelled = false;
 
@@ -42,11 +69,7 @@ export function CropControl({ videoElement, cropRegion, onCropChange }: CropCont
 			if (isCancelled) {
 				return;
 			}
-
-			if (videoElement.readyState >= 2) {
-				ctx.clearRect(0, 0, canvas.width, canvas.height);
-				ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
-			}
+			drawFrame();
 			animationFrameId = requestAnimationFrame(draw);
 		};
 
@@ -81,7 +104,7 @@ export function CropControl({ videoElement, cropRegion, onCropChange }: CropCont
 			x: (e.clientX - rect.left) / rect.width,
 			y: (e.clientY - rect.top) / rect.height,
 		});
-		setInitialCrop(cropRegion);
+		setInitialCrop(draftCrop);
 
 		e.currentTarget.setPointerCapture(e.pointerId);
 	};
@@ -99,7 +122,7 @@ export function CropControl({ videoElement, cropRegion, onCropChange }: CropCont
 		const deltaX = currentX - dragStart.x;
 		const deltaY = currentY - dragStart.y;
 
-		let newCrop = { ...initialCrop };
+		const newCrop = { ...initialCrop };
 
 		switch (isDragging) {
 			case "top": {
@@ -130,7 +153,17 @@ export function CropControl({ videoElement, cropRegion, onCropChange }: CropCont
 				break;
 		}
 
-		onCropChange(newCrop);
+		setDraftCrop(newCrop);
+		pendingCropRef.current = newCrop;
+
+		if (rafIdRef.current === null) {
+			rafIdRef.current = requestAnimationFrame(() => {
+				rafIdRef.current = null;
+				if (pendingCropRef.current) {
+					onCropChange(pendingCropRef.current);
+				}
+			});
+		}
 	};
 
 	const handlePointerUp = (e: React.PointerEvent) => {
@@ -141,13 +174,21 @@ export function CropControl({ videoElement, cropRegion, onCropChange }: CropCont
 				/* Pointer capture may already be released while ending the drag. */
 			}
 		}
+		if (rafIdRef.current !== null) {
+			cancelAnimationFrame(rafIdRef.current);
+			rafIdRef.current = null;
+		}
+		if (pendingCropRef.current) {
+			onCropChange(pendingCropRef.current);
+			pendingCropRef.current = null;
+		}
 		setIsDragging(null);
 	};
 
-	const cropPixelX = cropRegion.x * 100;
-	const cropPixelY = cropRegion.y * 100;
-	const cropPixelWidth = cropRegion.width * 100;
-	const cropPixelHeight = cropRegion.height * 100;
+	const cropPixelX = draftCrop.x * 100;
+	const cropPixelY = draftCrop.y * 100;
+	const cropPixelWidth = draftCrop.width * 100;
+	const cropPixelHeight = draftCrop.height * 100;
 	const videoAspectRatio = videoElement
 		? videoElement.videoWidth / videoElement.videoHeight
 		: 16 / 9;

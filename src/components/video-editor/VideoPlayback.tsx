@@ -1077,6 +1077,10 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 		]);
 
 		useEffect(() => {
+			layoutVideoContentRef.current = layoutVideoContent;
+		}, [layoutVideoContent]);
+
+		useEffect(() => {
 			const video = videoRef.current;
 			if (!video) return;
 
@@ -1264,6 +1268,14 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 			app.render();
 		}, [syncBlurFiltersForPlaybackState]);
 
+		// When layout properties (cropRegion, padding, borderRadius) change,
+		// update the sprite transform and mask in-place without destroying WebGL textures.
+		useEffect(() => {
+			if (!pixiReady || !videoReady) return;
+			layoutVideoContent();
+			refreshStaticFrame();
+		}, [layoutVideoContent, pixiReady, videoReady, refreshStaticFrame]);
+
 		const syncTickerRunState = useCallback(() => {
 			const app = appRef.current;
 			if (!app?.ticker) {
@@ -1284,11 +1296,17 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 		}, [refreshStaticFrame, syncBlurFiltersForPlaybackState]);
 
 		useEffect(() => {
+			if (zoomRegionsRef.current.length === 0 && zoomRegions.length === 0) {
+				return;
+			}
 			zoomRegionsRef.current = zoomRegions;
 			refreshStaticFrame();
 		}, [zoomRegions, refreshStaticFrame]);
 
 		useEffect(() => {
+			if (selectedZoomIdRef.current === selectedZoomId) {
+				return;
+			}
 			selectedZoomIdRef.current = selectedZoomId;
 			refreshStaticFrame();
 		}, [selectedZoomId, refreshStaticFrame]);
@@ -1630,7 +1648,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 				sprite.scale.set(1);
 				sprite.position.set(0, 0);
 
-				layoutVideoContent();
+				layoutVideoContentRef.current?.();
 
 				applyZoomTransform({
 					cameraContainer: container,
@@ -1656,7 +1674,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 					}
 				});
 			});
-		}, [pixiReady, videoReady, layoutVideoContent]);
+		}, [pixiReady, videoReady]);
 
 		useEffect(() => {
 			if (!pixiReady || !videoReady) return;
@@ -1977,7 +1995,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 
 			animationStateRef.current = createPlaybackAnimationState();
 
-			layoutVideoContent();
+			layoutVideoContentRef.current?.();
 			video.pause();
 
 			const { handlePlay, handlePause, handleSeeked, handleSeeking, dispose } =
@@ -2026,14 +2044,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 
 				videoSpriteRef.current = null;
 			};
-		}, [
-			layoutVideoContent,
-			onPlayStateChange,
-			onTimeUpdate,
-			pixiReady,
-			videoReady,
-			refreshStaticFrame,
-		]);
+		}, [onPlayStateChange, onTimeUpdate, pixiReady, videoReady, refreshStaticFrame]);
 
 		useEffect(() => {
 			if (!pixiReady || !videoReady) return;

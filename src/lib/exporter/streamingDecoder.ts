@@ -204,7 +204,16 @@ export class StreamingVideoDecoder {
 
 		const decoderConfig = await this.demuxer.getDecoderConfig("video");
 		const codec = this.metadata.codec.toLowerCase();
-		const shouldPreferSoftwareDecode = codec.includes("av01") || codec.includes("av1");
+		// VP9 (Recordly's own screen-recording codec) is frequently mis-handled
+		// by hardware (VAAPI) decoders on Linux, failing with a generic
+		// "Decoding error". Prefer software for VP9 alongside AV1 so exports do
+		// not depend on flaky GPU decode paths. WebM reports VP9 as both "vp9"
+		// and "vp09.*", so match both.
+		const shouldPreferSoftwareDecode =
+			codec.includes("av01") ||
+			codec.includes("av1") ||
+			codec.includes("vp09") ||
+			codec.includes("vp9");
 		const effectiveVideoDuration = getEffectiveVideoStreamDurationSeconds({
 			duration: this.metadata.duration,
 			streamDuration: this.metadata.streamDuration,
