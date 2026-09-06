@@ -42,6 +42,7 @@ import {
 	getMatchingCursorMotionPresetId,
 } from "./cursorMotionPresets";
 import { loadEditorPreferences, saveEditorPreferences } from "./editorPreferences";
+import { getDefaultBorderRadiusPercent } from "./projectPersistence";
 import { SliderControl } from "./SliderControl";
 import { KeyboardShortcutsDialog } from "./TutorialHelp";
 import type {
@@ -887,7 +888,8 @@ function CursorStylePreview({
 		style === "windows11"
 	) {
 		const resolvedPreviewSize =
-			(previewSize ?? BUILTIN_CURSOR_PREVIEW_SIZE) * getCursorStyleSizeMultiplier(style);
+			(previewSize ?? BUILTIN_CURSOR_PREVIEW_SIZE) *
+			(style === "windows11" ? 1 : getCursorStyleSizeMultiplier(style));
 		return (
 			<div
 				className="flex items-center justify-center"
@@ -1048,7 +1050,7 @@ export function SettingsPanel({
 	onCursorClickBounceDurationChange,
 	cursorSway = DEFAULT_CURSOR_SWAY,
 	onCursorSwayChange,
-	borderRadius = 12.5,
+	borderRadius = getDefaultBorderRadiusPercent(),
 	onBorderRadiusChange,
 	webcam,
 	webcamPreviewSrc = null,
@@ -1108,6 +1110,8 @@ export function SettingsPanel({
 	);
 	const [experimentalUpdatesEnabled, setExperimentalUpdatesEnabled] = useState(false);
 	const [savingExperimentalUpdates, setSavingExperimentalUpdates] = useState(false);
+	const [internalActiveEffectSection] = useState<EditorEffectSection>("scene");
+	const activeEffectSection = activeEffectSectionProp ?? internalActiveEffectSection;
 	const removeBackgroundStateRef = useRef<{
 		aspectRatio: AspectRatio;
 		padding: Padding;
@@ -1164,6 +1168,17 @@ export function SettingsPanel({
 	};
 
 	useEffect(() => {
+		if (
+			!isBackgroundPanel &&
+			activeEffectSection !== "scene" &&
+			activeEffectSection !== "frame" &&
+			activeEffectSection !== "crop" &&
+			activeEffectSection !== "extensions" &&
+			!activeEffectSection.startsWith("ext:")
+		) {
+			return;
+		}
+
 		let mounted = true;
 		(async () => {
 			try {
@@ -1194,7 +1209,7 @@ export function SettingsPanel({
 		return () => {
 			mounted = false;
 		};
-	}, []);
+	}, [activeEffectSection, isBackgroundPanel]);
 
 	const colorPalette = [
 		"#FF0000",
@@ -1229,8 +1244,6 @@ export function SettingsPanel({
 	const customColorInputRef = useRef<HTMLInputElement | null>(null);
 	const cursorClickEffectColorInputRef = useRef<HTMLInputElement | null>(null);
 	const defaultWebcam = initialEditorPreferences.webcam;
-	const [internalActiveEffectSection] = useState<EditorEffectSection>("scene");
-	const activeEffectSection = activeEffectSectionProp ?? internalActiveEffectSection;
 	const [builtInCursorPreviewUrls, setBuiltInCursorPreviewUrls] = useState<
 		Partial<Record<string, string>>
 	>({});
@@ -1246,8 +1259,10 @@ export function SettingsPanel({
 			try {
 				const macosPreview = cursorSetAssets.macos.arrow.url;
 				const tahoePreview = cursorSetAssets.tahoe.arrow.url;
-				const windows11Preview = cursorSetAssets.windows11.arrow.url;
-				const minimalPreview = await createTrimmedSvgPreview(minimalCursorUrl, 512);
+				const [windows11Preview, minimalPreview] = await Promise.all([
+					createTrimmedSvgPreview(cursorSetAssets.windows11.arrow.url, 512),
+					createTrimmedSvgPreview(minimalCursorUrl, 512),
+				]);
 				const invertedPreview = await createInvertedPreview(tahoePreview);
 
 				if (!cancelled) {
@@ -2095,11 +2110,11 @@ export function SettingsPanel({
 					value={borderRadius}
 					defaultValue={initialEditorPreferences.borderRadius}
 					min={0}
-					max={200}
-					step={0.5}
+					max={50}
+					step={0.1}
 					onChange={(v) => onBorderRadiusChange?.(v)}
-					formatValue={(v) => `${v}px`}
-					parseInput={(text) => parseFloat(text.replace(/px$/, ""))}
+					formatValue={(v) => `${v}%`}
+					parseInput={(text) => parseFloat(text.replace(/%$/, ""))}
 				/>
 				<div className="flex flex-col gap-1.5 pt-0.5">
 					<div className="flex items-center justify-between">

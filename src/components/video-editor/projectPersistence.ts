@@ -9,7 +9,7 @@ import type {
 	GifFrameRate,
 	GifSizePreset,
 } from "@/lib/exporter";
-import { isValidMp4FrameRate } from "@/lib/exporter";
+import { isValidMp4FrameRate } from "@/lib/exporter/types";
 import {
 	TEMPORAL_MOTION_BLUR_DEFAULT_SAMPLE_COUNT,
 	TEMPORAL_MOTION_BLUR_DEFAULT_SHUTTER_FRACTION,
@@ -82,7 +82,19 @@ import {
 } from "./types";
 import { convertLegacyWebcamRadiusToRoundness, normalizeWebcamCropRegion } from "./webcamOverlay";
 
-export const PROJECT_VERSION = 1;
+export const PROJECT_VERSION = 2;
+export const MACOS_DEFAULT_BORDER_RADIUS_PERCENT = 8;
+const LEGACY_BORDER_RADIUS_REFERENCE_PX = 1080;
+
+export function getDefaultBorderRadiusPercent(
+	platform = typeof navigator === "undefined" ? "" : navigator.platform,
+): number {
+	return /mac/i.test(platform) ? MACOS_DEFAULT_BORDER_RADIUS_PERCENT : 0;
+}
+
+export function legacyBorderRadiusPixelsToPercent(value: number): number {
+	return (value / LEGACY_BORDER_RADIUS_REFERENCE_PX) * 100;
+}
 
 const DEFAULT_MOTION_PRESET = CURSOR_MOTION_PRESETS.focused;
 
@@ -197,11 +209,9 @@ export function normalizeExportBackendPreference(value: unknown): ExportBackendP
 	return "auto";
 }
 
-export function normalizeExportPipelineModel(value: unknown): ExportPipelineModel {
-	if (value === "modern" || value === "legacy") {
-		return value;
-	}
-
+export function normalizeExportPipelineModel(_value: unknown): ExportPipelineModel {
+	// Legacy remains available to internal smoke/export routing, but persisted
+	// user selections migrate to the only pipeline exposed by the editor UI.
 	return "modern";
 }
 
@@ -317,15 +327,20 @@ export function deriveNextId(prefix: string, ids: string[]): number {
  * media server is unavailable.
  */
 export async function resolveVideoUrl(sourcePath: string): Promise<string> {
+	const trimmedSourcePath = sourcePath.trim();
+	if (/^(?:https?:|blob:|data:)/i.test(trimmedSourcePath)) {
+		return trimmedSourcePath;
+	}
+	const localPath = fromFileUrl(trimmedSourcePath);
 	try {
-		const result = await window.electronAPI.getLocalMediaUrl(sourcePath);
+		const result = await window.electronAPI.getLocalMediaUrl(localPath);
 		if (result.success) {
 			return result.url;
 		}
 	} catch {
 		// Media server unavailable — fall through to file:// URL.
 	}
-	return toFileUrl(sourcePath);
+	return toFileUrl(localPath);
 }
 
 export function validateProjectData(candidate: unknown): candidate is EditorProjectData {
@@ -946,7 +961,9 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 		cursorSway: isFiniteNumber((editor as Partial<ProjectEditorState>).cursorSway)
 			? clamp((editor as Partial<ProjectEditorState>).cursorSway as number, 0, 2)
 			: DEFAULT_CURSOR_SWAY,
-		borderRadius: typeof editor.borderRadius === "number" ? editor.borderRadius : 12.5,
+		borderRadius: isFiniteNumber(editor.borderRadius)
+			? clamp(editor.borderRadius, 0, 50)
+			: getDefaultBorderRadiusPercent(),
 		padding: (() => {
 			const p = editor.padding;
 			if (p && typeof p === "object") {
