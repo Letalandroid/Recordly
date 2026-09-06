@@ -1365,24 +1365,62 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				// We don't await this to keep the UI responsive
 				void (async () => {
 					try {
-						// Await the webcam path in the background
-						const webcamPath = await webcamPathPromise;
-						console.log(
-							"[useScreenRecorder] Background native processing: webcamPath is",
-							webcamPath,
-						);
+						// Webcam persistence, microphone sidecars, and Windows muxing are
+						// independent. Run them concurrently so the editor can keep playing
+						// the main video and reveal the webcam as soon as only that file is ready.
+						const webcamReadyPromise = webcamPathPromise.then(async (webcamPath) => {
+							console.log(
+								"[useScreenRecorder] Background native processing: webcamPath is",
+								webcamPath,
+							);
 
-						// Store sidecars
-						await storeMicrophoneSidecar(
+							if (webcamPath) {
+								try {
+									await window.electronAPI.setCurrentRecordingSession({
+										videoPath: finalPath,
+										webcamPath,
+										timeOffsetMs: webcamTimeOffsetMs.current,
+										hideOverlayCursorByDefault:
+											hideEditorOverlayCursorByDefault.current,
+									});
+								} catch (sessionError) {
+									console.error(
+										"Failed to publish the asynchronously finalized webcam:",
+										sessionError,
+									);
+								}
+							}
+
+							return webcamPath;
+						});
+						const microphoneReadyPromise = storeMicrophoneSidecar(
 							micFallbackBlobPromise,
 							finalPath,
 							fallbackStartDelayMs,
 							fallbackTrackSettings,
 						);
-
-						// Perform muxing/renaming if on Windows
-						if (isNativeWindows) {
-							await window.electronAPI.muxNativeWindowsRecording(expectedDurationMs);
+						const muxReadyPromise = isNativeWindows
+							? window.electronAPI.muxNativeWindowsRecording(expectedDurationMs)
+							: Promise.resolve(null);
+						const [webcamResult, microphoneResult, muxResult] =
+							await Promise.allSettled([
+								webcamReadyPromise,
+								microphoneReadyPromise,
+								muxReadyPromise,
+							]);
+						const webcamPath =
+							webcamResult.status === "fulfilled" ? webcamResult.value : null;
+						for (const [taskName, result] of [
+							["webcam", webcamResult],
+							["microphone sidecar", microphoneResult],
+							["Windows mux", muxResult],
+						] as const) {
+							if (result.status === "rejected") {
+								console.error(
+									`[useScreenRecorder] ${taskName} finalization failed:`,
+									result.reason,
+								);
+							}
 						}
 
 						console.log(
@@ -1495,6 +1533,10 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 					setMicrophoneDeviceId(result.microphoneDeviceId);
 				}
 				setSystemAudioEnabled(result.systemAudioEnabled);
+				setWebcamEnabled(result.webcamEnabled);
+				if (result.webcamDeviceId) {
+					setWebcamDeviceId(result.webcamDeviceId);
+				}
 			}
 		})();
 	}, []);
@@ -1512,6 +1554,16 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 	const persistSystemAudioEnabled = useCallback((enabled: boolean) => {
 		setSystemAudioEnabled(enabled);
 		void window.electronAPI.setRecordingPreferences({ systemAudioEnabled: enabled });
+	}, []);
+
+	const persistWebcamEnabled = useCallback((enabled: boolean) => {
+		setWebcamEnabled(enabled);
+		void window.electronAPI.setRecordingPreferences({ webcamEnabled: enabled });
+	}, []);
+
+	const persistWebcamDeviceId = useCallback((deviceId: string | undefined) => {
+		setWebcamDeviceId(deviceId);
+		void window.electronAPI.setRecordingPreferences({ webcamDeviceId: deviceId });
 	}, []);
 
 	useEffect(() => {
@@ -2389,9 +2441,9 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		systemAudioEnabled,
 		setSystemAudioEnabled: persistSystemAudioEnabled,
 		webcamEnabled,
-		setWebcamEnabled,
+		setWebcamEnabled: persistWebcamEnabled,
 		webcamDeviceId,
-		setWebcamDeviceId,
+		setWebcamDeviceId: persistWebcamDeviceId,
 		countdownDelay,
 		setCountdownDelay,
 	};

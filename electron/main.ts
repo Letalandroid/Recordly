@@ -39,9 +39,10 @@ import {
 	getUpdaterLogPath,
 	getUpdateStatusSummary,
 	installDownloadedUpdateNow,
+	previewNativeUpdateDialog,
 	previewUpdateToast,
-	setupAutoUpdates,
 	setExperimentalUpdatesEnabled,
+	setupAutoUpdates,
 	skipAvailableUpdateVersion,
 } from "./updater";
 import {
@@ -52,6 +53,7 @@ import {
 	getUpdateToastWindow,
 	hideUpdateToastWindow,
 	isHudOverlayMousePassthroughSupported,
+	reassertHudOverlayCaptureProtection,
 	reassertHudOverlayMousePassthrough as reassertHudOverlayMouseState,
 	setHudOverlayRecordingActive,
 	showUpdateToastWindow,
@@ -62,7 +64,7 @@ const IS_SMOKE_EXPORT = process.env.RECORDLY_SMOKE_EXPORT === "1";
 
 function ignoreBrokenConsolePipe(stream: NodeJS.WritableStream | undefined) {
 	stream?.on("error", (error: NodeJS.ErrnoException) => {
-		if (error.code === "EPIPE") {
+		if (error.code === "EPIPE" || error.code === "EIO") {
 			return;
 		}
 		throw error;
@@ -175,6 +177,7 @@ let trayContextMenu: Menu | null = null;
 let selectedSourceName = "";
 let editorHasUnsavedChanges = false;
 let isForceClosing = false;
+let isAppQuitting = false;
 let isCreatingMainWindow = false;
 let isCreatingEditorWindow = false;
 const shouldEnforceSingleInstanceLock = !IS_DEV;
@@ -196,6 +199,22 @@ function closeEditorWindowBypassingUnsavedPrompt(window: BrowserWindow | null) {
 		editorHasUnsavedChanges = false;
 	}
 	window.close();
+}
+
+function closeEditorWindowToHud(window: BrowserWindow | null) {
+	if (!window || window.isDestroyed()) {
+		return;
+	}
+
+	// The HUD renderer normally remains hidden while the editor is open so
+	// recording finalization can continue. Restore that HUD before destroying
+	// the editor, keeping Recordly in its ready-to-record state on the taskbar.
+	window.hide();
+	if (mainWindow === window) {
+		mainWindow = null;
+	}
+	createWindow();
+	closeEditorWindowBypassingUnsavedPrompt(window);
 }
 
 function restoreWindowSafely(window: BrowserWindow | null) {
@@ -414,26 +433,23 @@ function sendEditorMenuAction(
 
 function setupApplicationMenu() {
 	const isMac = process.platform === "darwin";
-	if (!isMac) {
-		Menu.setApplicationMenu(null);
-		return;
-	}
-
 	const template: Electron.MenuItemConstructorOptions[] = [];
-	template.push({
-		label: app.name,
-		submenu: [
-			{ role: "about" },
-			{ type: "separator" },
-			{ role: "services" },
-			{ type: "separator" },
-			{ role: "hide" },
-			{ role: "hideOthers" },
-			{ role: "unhide" },
-			{ type: "separator" },
-			{ role: "quit" },
-		],
-	});
+	if (isMac) {
+		template.push({
+			label: app.name,
+			submenu: [
+				{ role: "about" },
+				{ type: "separator" },
+				{ role: "services" },
+				{ type: "separator" },
+				{ role: "hide" },
+				{ role: "hideOthers" },
+				{ role: "unhide" },
+				{ type: "separator" },
+				{ role: "quit" },
+			],
+		});
+	}
 
 	template.push(
 		{
@@ -454,7 +470,12 @@ function setupApplicationMenu() {
 					accelerator: "CmdOrCtrl+Shift+S",
 					click: () => sendEditorMenuAction("menu-save-project-as"),
 				},
-				...(isMac ? [] : [{ type: "separator" as const }, { role: "quit" as const }]),
+				...(isMac
+					? []
+					: [
+							{ type: "separator" as const },
+							{ role: "quit" as const, accelerator: "CmdOrCtrl+Q" },
+						]),
 			],
 		},
 		{
@@ -572,6 +593,10 @@ function syncDockIcon() {
 }
 
 function sendUpdateToastToWindows(channel: "update-toast-state", payload: unknown) {
+	if (process.platform !== "darwin") {
+		return false;
+	}
+
 	if (!payload) {
 		const existingWindow = getUpdateToastWindow();
 		if (existingWindow) {
@@ -663,7 +688,12 @@ ipcMain.handle("set-experimental-updates-enabled", async (_event, enabled: unkno
 	}
 });
 
-ipcMain.handle("preview-update-toast", () => {
+ipcMain.handle("preview-update-toast", async () => {
+	if (process.platform !== "darwin") {
+		await previewNativeUpdateDialog(getUpdateDialogWindow);
+		return { success: true };
+	}
+
 	return { success: previewUpdateToast(sendUpdateToastToWindows) };
 });
 
@@ -776,6 +806,10 @@ function createEditorWindowWrapper() {
 
 	editorWindow.on("close", (event) => {
 		if (isForceClosing || !editorHasUnsavedChanges) {
+			if (process.platform === "win32" && !isForceClosing && !isAppQuitting) {
+				event.preventDefault();
+				closeEditorWindowToHud(editorWindow);
+			}
 			return;
 		}
 
@@ -794,12 +828,25 @@ function createEditorWindowWrapper() {
 		if (choice === 0) {
 			editorWindow.webContents.send("request-save-before-close");
 			ipcMain.once("save-before-close-done", (_event, saved: boolean) => {
-				if (saved) {
+				if (!saved) {
+					isAppQuitting = false;
+					return;
+				}
+
+				if (process.platform === "win32" && !isAppQuitting) {
+					closeEditorWindowToHud(editorWindow);
+				} else {
 					closeEditorWindowBypassingUnsavedPrompt(editorWindow);
 				}
 			});
 		} else if (choice === 1) {
-			closeEditorWindowBypassingUnsavedPrompt(editorWindow);
+			if (process.platform === "win32" && !isAppQuitting) {
+				closeEditorWindowToHud(editorWindow);
+			} else {
+				closeEditorWindowBypassingUnsavedPrompt(editorWindow);
+			}
+		} else {
+			isAppQuitting = false;
 		}
 	});
 
@@ -817,6 +864,7 @@ function createSourceSelectorWindowWrapper() {
 // On macOS, applications and their menu bar stay active until the user quits
 // explicitly with Cmd + Q.
 app.on("before-quit", () => {
+	isAppQuitting = true;
 	killWindowsCaptureProcess();
 	showCursor();
 	cleanupNativeVideoExportSessions();
@@ -887,17 +935,11 @@ app.whenReady().then(async () => {
 	// Recordly does not use WebHID, Web Serial, or WebUSB. Do not grant devices by default.
 	session.defaultSession.setDevicePermissionHandler(() => false);
 
-	if (process.platform === "darwin") {
-		const cameraStatus = systemPreferences.getMediaAccessStatus("camera");
-		if (cameraStatus !== "granted") {
-			await systemPreferences.askForMediaAccess("camera");
-		}
-
-		const micStatus = systemPreferences.getMediaAccessStatus("microphone");
-		if (micStatus !== "granted") {
-			await systemPreferences.askForMediaAccess("microphone");
-		}
-	} else if (process.platform === "win32") {
+	// macOS prompts for camera and microphone access at the point of use. Asking
+	// here blocks the first window behind two modal OS permission flows and makes
+	// a fresh install look hung. Windows has no equivalent request API, so retain
+	// its diagnostic warnings.
+	if (process.platform === "win32") {
 		const cameraStatus = systemPreferences.getMediaAccessStatus("camera");
 		const micStatus = systemPreferences.getMediaAccessStatus("microphone");
 		if (cameraStatus !== "granted") {
@@ -938,22 +980,20 @@ app.whenReady().then(async () => {
 		updateTrayMenu();
 	}
 	setupApplicationMenu();
-	// Ensure recordings directory exists
-	await ensureRecordingsDir();
-
-	if (!VITE_DEV_SERVER_URL) {
-		try {
-			await ensurePackagedRendererServer(RENDERER_DIST);
-		} catch (error) {
-			console.warn("[renderer-server] Failed to start packaged renderer server:", error);
-		}
-	}
-
-	try {
-		await ensureMediaServer();
-	} catch (error) {
-		console.warn("[media-server] Failed to start media server:", error);
-	}
+	await Promise.all([
+		ensureRecordingsDir(),
+		!VITE_DEV_SERVER_URL
+			? ensurePackagedRendererServer(RENDERER_DIST).catch((error) => {
+					console.warn(
+						"[renderer-server] Failed to start packaged renderer server:",
+						error,
+					);
+				})
+			: Promise.resolve(),
+		ensureMediaServer().catch((error) => {
+			console.warn("[media-server] Failed to start media server:", error);
+		}),
+	]);
 
 	registerIpcHandlers(
 		createEditorWindowWrapper,
@@ -997,7 +1037,12 @@ app.whenReady().then(async () => {
 	setupAutoUpdates(getUpdateDialogWindow, sendUpdateToastToWindows);
 	if (IS_DEV && process.env.RECORDLY_DEV_PREVIEW_UPDATE === "1") {
 		setTimeout(() => {
-			previewUpdateToast(sendUpdateToastToWindows);
+			if (process.platform === "darwin") {
+				previewUpdateToast(sendUpdateToastToWindows);
+				return;
+			}
+
+			void previewNativeUpdateDialog(getUpdateDialogWindow);
 		}, 750);
 	}
 
@@ -1037,6 +1082,10 @@ app.whenReady().then(async () => {
 				callback({});
 				return;
 			}
+
+			// Browser and Linux portal capture starts as soon as this callback
+			// resolves, before recording-state-changed is emitted.
+			reassertHudOverlayCaptureProtection();
 
 			const sourceId = getSelectedSourceId();
 			// On Linux/Wayland, calling desktopCapturer.getSources() itself

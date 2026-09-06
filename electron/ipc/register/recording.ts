@@ -12,8 +12,12 @@ import {
 	shell,
 	systemPreferences,
 } from "electron";
+import { getHudCaptureExcludedProcessIds } from "../../../src/lib/hudCaptureProtection";
 import { showCursor } from "../../cursorHider";
-import { getMonitorHandles } from "../monitorResolver";
+import {
+	getHudOverlayCaptureProtectionEnabled,
+	reassertHudOverlayCaptureProtection,
+} from "../../windows";
 import { ALLOW_RECORDLY_WINDOW_CAPTURE } from "../constants";
 import { startWindowBoundsCapture, stopWindowBoundsCapture } from "../cursor/bounds";
 import { startInteractionCapture, stopInteractionCapture } from "../cursor/interaction";
@@ -31,6 +35,7 @@ import {
 	writeCursorTelemetry,
 } from "../cursor/telemetry";
 import { getFfmpegBinaryPath } from "../ffmpeg/binary";
+import { getMonitorHandles } from "../monitorResolver";
 import {
 	ensureNativeCaptureHelperBinary,
 	ensureSwiftHelperBinary,
@@ -150,6 +155,7 @@ import {
 	parseWindowId,
 } from "../utils";
 import { resolveWindowsCaptureTarget } from "../windowsCaptureSelection";
+import { bringSelectedWindowForward } from "./sources";
 
 const execFileAsync = promisify(execFile);
 
@@ -398,6 +404,13 @@ export function registerRecordingHandlers(
 	ipcMain.handle(
 		"start-native-screen-recording",
 		async (_, source: SelectedSource, options?: NativeMacRecordingOptions) => {
+			// Capture starts before the renderer publishes its recording-state
+			// transition, so protect the HUD at the actual capture boundary.
+			reassertHudOverlayCaptureProtection();
+			const visibleWindowBounds = source.id?.startsWith("window:")
+				? await bringSelectedWindowForward(source)
+				: null;
+
 			// Windows native capture path
 			if (process.platform === "win32") {
 				const windowsCaptureAvailable = await isNativeWindowsCaptureAvailable();
@@ -549,13 +562,10 @@ export function registerRecordingHandlers(
 					setWindowsCaptureStopRequested(false);
 					setWindowsCapturePaused(false);
 
-					// The native helper currently does not declare DPI awareness in its own
-					// manifest or process setup, so we keep the compatibility flag here until
-					// scaled-display capture is verified without it on Windows.
 					wcProc = spawn(exePath, [JSON.stringify(config)], {
 						cwd: recordingsDir,
 						stdio: ["pipe", "pipe", "pipe"],
-						env: { ...process.env, __COMPAT_LAYER: "HighDpiAware" },
+						env: process.env,
 					});
 					setWindowsCaptureProcess(wcProc);
 					attachWindowsCaptureLifecycle(wcProc);
@@ -726,6 +736,15 @@ export function registerRecordingHandlers(
 					capturesMicrophone,
 				};
 
+				const excludedProcessIds = getHudCaptureExcludedProcessIds(
+					process.platform,
+					getHudOverlayCaptureProtectionEnabled(),
+					process.pid,
+				);
+				if (excludedProcessIds.length > 0) {
+					config.excludedProcessIds = excludedProcessIds;
+				}
+
 				if (options?.microphoneDeviceId) {
 					config.microphoneDeviceId = options.microphoneDeviceId;
 				}
@@ -747,6 +766,12 @@ export function registerRecordingHandlers(
 
 				if (Number.isFinite(windowId) && windowId && source?.id?.startsWith("window:")) {
 					config.windowId = windowId;
+					if (visibleWindowBounds) {
+						config.windowX = visibleWindowBounds.x;
+						config.windowY = visibleWindowBounds.y;
+						config.windowWidth = visibleWindowBounds.width;
+						config.windowHeight = visibleWindowBounds.height;
+					}
 				} else if (Number.isFinite(screenId) && screenId > 0) {
 					config.displayId = screenId;
 				} else {
@@ -798,7 +823,10 @@ export function registerRecordingHandlers(
 					microphonePath: nativeCaptureMicrophonePath,
 					processOutput: nativeCaptureOutputBuffer.trim() || undefined,
 				});
-				return { success: true, microphoneFallbackRequired: micUnavailableNatively };
+				return {
+					success: true,
+					microphoneFallbackRequired: micUnavailableNatively,
+				};
 			} catch (error) {
 				console.error("Failed to start native ScreenCaptureKit recording:", error);
 				const errorStr = String(error);
