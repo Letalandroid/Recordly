@@ -27,9 +27,6 @@ type Input = {
 	autoFullTrackEndRef: MutableRefObject<number | null>;
 };
 
-const EMPTY_ZOOM_REGIONS: ZoomRegion[] = [];
-const EMPTY_CAPTIONS: CaptionCue[] = [];
-
 export function useTimelineProjection({
 	timeline,
 	duration,
