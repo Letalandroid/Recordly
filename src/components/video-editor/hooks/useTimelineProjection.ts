@@ -1,12 +1,14 @@
 /* biome-ignore-all lint/correctness/useExhaustiveDependencies: mutable timeline bootstrap refs intentionally do not trigger effects. */
 import { type MutableRefObject, useCallback, useEffect, useMemo } from "react";
+import { closeClipGaps, rippleRegionAnchors, rippleRegions } from "../clipSequence";
+import { projectCaptionCues } from "../captionTimeline";
 import { deriveNextId } from "../projectPersistence";
 import type { useTimelineState } from "../state/useTimelineState";
 import {
-	type CaptionCue,
 	clipsToTrims,
 	extendAutoFullTrackClip,
 	getClipSourceEndMs,
+	getClipSourceStartMs,
 	getTimelineDurationMs,
 	mapSourceTimeToTimelineTime,
 	mapTimelineTimeToSourceTime,
@@ -59,7 +61,19 @@ export function useTimelineProjection({
 						nextRegions.map(({ id }) => id),
 					);
 				}
-				timeline.setClipRegions(nextRegions);
+				const sequence = closeClipGaps(nextRegions);
+				timeline.setClipRegions(sequence);
+				if (trimRegions.length > 0) {
+					timeline.setZoomRegions((current) =>
+						rippleRegions(current, nextRegions, sequence),
+					);
+					timeline.setAnnotationRegions((current) =>
+						rippleRegions(current, nextRegions, sequence),
+					);
+					timeline.setAudioRegions((current) =>
+						rippleRegionAnchors(current, nextRegions, sequence),
+					);
+				}
 			}
 			initializedRef.current = true;
 			return;
@@ -91,28 +105,15 @@ export function useTimelineProjection({
 		(timeMs: number) => mapSourceTimeToTimelineTime(timeMs, clipRegions),
 		[clipRegions],
 	);
-	const effectiveZoomRegions = useMemo<ZoomRegion[]>(() => {
-		if (zoomRegions.length === 0) return EMPTY_ZOOM_REGIONS;
-		return zoomRegions.map((region) => ({
-			...region,
-			startMs: toSourceTime(region.startMs),
-			endMs: toSourceTime(region.endMs),
-		}));
-	}, [zoomRegions, toSourceTime]);
-	const effectiveCaptionRegions = useMemo<CaptionCue[]>(() => {
-		if (autoCaptions.length === 0) return EMPTY_CAPTIONS;
-		return autoCaptions.map((cue) => ({
-			...cue,
-			startMs: toTimelineTime(cue.startMs),
-			endMs: toTimelineTime(cue.endMs),
-		}));
-	}, [autoCaptions, toTimelineTime]);
-	const timelinePlayheadTime = useMemo(
-		() => toTimelineTime(currentTime * 1000) / 1000,
-		[currentTime, toTimelineTime],
+	const effectiveZoomRegions: ZoomRegion[] = zoomRegions;
+	const effectiveCaptionRegions = useMemo(
+		() => projectCaptionCues(autoCaptions, clipRegions),
+		[autoCaptions, clipRegions],
 	);
+	const timelinePlayheadTime = currentTime;
 	const timelineDuration = useMemo(
-		() => getTimelineDurationMs(clipRegions, duration * 1000) / 1000,
+		() =>
+			getTimelineDurationMs(clipRegions, initializedRef.current ? 0 : duration * 1000) / 1000,
 		[clipRegions, duration],
 	);
 	const effectiveSpeedRegions = useMemo<SpeedRegion[]>(() => {
@@ -120,7 +121,7 @@ export function useTimelineProjection({
 			.filter(({ speed }) => speed !== 1)
 			.map((clip) => ({
 				id: `clip-speed-${clip.id}`,
-				startMs: clip.startMs,
+				startMs: getClipSourceStartMs(clip),
 				endMs: getClipSourceEndMs(clip),
 				speed: clip.speed as SpeedRegion["speed"],
 			}));
